@@ -1,6 +1,6 @@
 services:
   db:
-    image: bitnami/postgresql:15
+    image: bitnami/postgresql:latest
     environment:
       POSTGRES_USER: otm
       POSTGRES_PASSWORD: omguseotm
