@@ -17,9 +17,14 @@ const {
 } = process.env;
 
 let producer: Producer | null = null;
+let initializing: Promise<Producer> | null = null;
 
 export async function getKafkaProducer(): Promise<Producer> {
+  // Fast path: return existing producer
   if (producer) return producer;
+  
+  // Another request is already initializing, wait for it
+  if (initializing) return initializing;
 
   if (!KAFKA_BROKERS || !KAFKA_TOPIC_INGEST) {
     throw new KafkaUnavailableError("Kafka configuration is missing", {
@@ -32,31 +37,40 @@ export async function getKafkaProducer(): Promise<Producer> {
 
   const saslEnabled = KAFKA_SASL_ENABLED === "true";
 
-  try {
-    const kafka = new Kafka({
-      clientId: KAFKA_CLIENT_ID,
-      brokers: KAFKA_BROKERS.split(","),
-      ssl: KAFKA_SSL === "true",
-      ...(saslEnabled
-        ? {
-            sasl: {
-              mechanism: (KAFKA_SASL_MECHANISM ?? "scram-sha-512") as any,
-              username: KAFKA_SASL_USERNAME ?? "",
-              password: KAFKA_SASL_PASSWORD ?? "",
-            },
-          }
-        : {}),
-      logLevel: logLevel.ERROR,
-    });
+  // Create initialization promise to prevent concurrent initialization
+  initializing = (async () => {
+    try {
+      const kafka = new Kafka({
+        clientId: KAFKA_CLIENT_ID,
+        brokers: KAFKA_BROKERS.split(","),
+        ssl: KAFKA_SSL === "true",
+        ...(saslEnabled
+          ? {
+              sasl: {
+                mechanism: (KAFKA_SASL_MECHANISM ?? "scram-sha-512") as any,
+                username: KAFKA_SASL_USERNAME ?? "",
+                password: KAFKA_SASL_PASSWORD ?? "",
+              },
+            }
+          : {}),
+        logLevel: logLevel.ERROR,
+      });
 
-    producer = kafka.producer();
-    await producer.connect();
-    return producer;
-  } catch (err) {
-    throw new KafkaUnavailableError("Failed to initialize Kafka producer", {
-      cause: err,
-    });
-  }
+      const newProducer = kafka.producer();
+      await newProducer.connect();
+      producer = newProducer;
+      return newProducer;
+    } catch (err) {
+      throw new KafkaUnavailableError("Failed to initialize Kafka producer", {
+        cause: err,
+      });
+    } finally {
+      // Clear the initializing flag so future calls check the producer again
+      initializing = null;
+    }
+  })();
+
+  return initializing;
 }
 
 export async function sendBatchToKafka(
